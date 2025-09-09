@@ -99,7 +99,433 @@ def get_development_status(agent: Agent) -> str:
     else:
         return "📊 No team session state available"
 
+@tool
+def search_project_files(query: str, file_types: str = "js,jsx,ts,tsx,css,json,md,py") -> str:
+    """
+    Search across all generated project files (frontend + backend) for specific content.
+    
+    Args:
+        query: Search term or pattern to look for
+        file_types: Comma-separated file extensions to search (default: js,jsx,ts,tsx,css,json,md,py)
+    
+    Returns:
+        Search results with file paths and matching lines
+    """
+    import os
+    import re
+    from pathlib import Path
+    
+    results = []
+    search_dirs = ["generated/frontend", "generated/backend"]
+    extensions = [ext.strip() for ext in file_types.split(",")]
+    
+    for search_dir in search_dirs:
+        if not os.path.exists(search_dir):
+            continue
+            
+        for root, dirs, files in os.walk(search_dir):
+            for file in files:
+                file_ext = file.split('.')[-1] if '.' in file else ''
+                if file_ext in extensions:
+                    file_path = os.path.join(root, file)
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                            lines = content.split('\n')
+                            
+                        # Search for query in content
+                        matches = []
+                        for i, line in enumerate(lines, 1):
+                            if re.search(query, line, re.IGNORECASE):
+                                matches.append(f"  Line {i}: {line.strip()}")
+                        
+                        if matches:
+                            results.append(f"\n📄 {file_path}:")
+                            results.extend(matches[:5])  # Limit to 5 matches per file
+                            if len(matches) > 5:
+                                results.append(f"  ... and {len(matches) - 5} more matches")
+                                
+                    except Exception as e:
+                        results.append(f"❌ Error reading {file_path}: {str(e)}")
+    
+    if not results:
+        return f"🔍 No matches found for '{query}' in project files"
+    
+    return f"🔍 Search results for '{query}':\n" + "\n".join(results)
+
+@tool
+def read_project_file(file_path: str) -> str:
+    """
+    Safely read a file from the project (generated or source files).
+    
+    Args:
+        file_path: Path to the file (relative to project root or absolute)
+    
+    Returns:
+        File content or error message
+    """
+    import os
+    
+    # Normalize path and ensure it's safe
+    if not file_path.startswith(('generated/', 'utils/', 'agents/')):
+        file_path = f"generated/{file_path}"
+    
+    try:
+        if not os.path.exists(file_path):
+            return f"❌ File not found: {file_path}"
+        
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        return f"📄 Content of {file_path}:\n\n{content}"
+        
+    except Exception as e:
+        return f"❌ Error reading {file_path}: {str(e)}"
+
+@tool
+def write_project_file(file_path: str, content: str, mode: str = "create") -> str:
+    """
+    Safely write content to a project file with backup support.
+    
+    Args:
+        file_path: Path to the file (relative to generated/ directory)
+        content: Content to write
+        mode: 'create' (new file), 'update' (replace existing), 'append' (add to end)
+    
+    Returns:
+        Success message or error
+    """
+    import os
+    import shutil
+    from datetime import datetime
+    
+    # Ensure file is in generated directory for safety
+    if not file_path.startswith('generated/'):
+        file_path = f"generated/{file_path}"
+    
+    try:
+        # Create directory if needed
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
+        # Create backup if file exists and we're updating
+        if mode == "update" and os.path.exists(file_path):
+            backup_path = f"{file_path}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            shutil.copy2(file_path, backup_path)
+        
+        # Write content based on mode
+        if mode == "append":
+            with open(file_path, 'a', encoding='utf-8') as f:
+                f.write(content)
+        else:  # create or update
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+        
+        action = "Created" if mode == "create" else "Updated" if mode == "update" else "Appended to"
+        return f"✅ {action} {file_path} successfully"
+        
+    except Exception as e:
+        return f"❌ Error writing {file_path}: {str(e)}"
+
+@tool
+def analyze_project_structure() -> str:
+    """
+    Analyze the current project structure and identify existing files.
+    
+    Returns:
+        Detailed project structure analysis
+    """
+    import os
+    from pathlib import Path
+    
+    structure = []
+    structure.append("📁 Current Project Structure:")
+    structure.append("=" * 40)
+    
+    # Analyze generated directory
+    if os.path.exists("generated"):
+        structure.append("\n🏗️ Generated Files:")
+        
+        for root, dirs, files in os.walk("generated"):
+            level = root.replace("generated", "").count(os.sep)
+            indent = "  " * level
+            structure.append(f"{indent}📂 {os.path.basename(root)}/")
+            
+            subindent = "  " * (level + 1)
+            for file in files:
+                file_path = os.path.join(root, file)
+                try:
+                    size = os.path.getsize(file_path)
+                    structure.append(f"{subindent}📄 {file} ({size} bytes)")
+                except:
+                    structure.append(f"{subindent}📄 {file}")
+    
+    # Check for key configuration files
+    structure.append("\n🔧 Configuration Status:")
+    config_files = [
+        ("generated/frontend/package.json", "Frontend dependencies"),
+        ("generated/backend/requirements.txt", "Backend dependencies"),
+        ("generated/frontend/index.jsx", "Frontend entry point"),
+        ("generated/frontend/App.jsx", "Main React component"),
+        ("generated/backend/app.py", "FastAPI main application"),
+    ]
+    
+    for file_path, description in config_files:
+        if os.path.exists(file_path):
+            structure.append(f"  ✅ {description}: {file_path}")
+        else:
+            structure.append(f"  ❌ Missing {description}: {file_path}")
+    
+    return "\n".join(structure)
+
+@tool
+def detect_generation_mode(user_query: str) -> str:
+    """
+    Detect whether the user wants first generation or iterative refinement.
+    
+    Args:
+        user_query: The user's request/query
+    
+    Returns:
+        Analysis of generation mode and recommendations
+    """
+    import os
+    
+    # Check if generated files exist
+    has_backend = os.path.exists("generated/backend") and len(os.listdir("generated/backend")) > 0
+    has_frontend = os.path.exists("generated/frontend") and len(os.listdir("generated/frontend")) > 0
+    
+    # Keywords that suggest first generation
+    first_gen_keywords = [
+        "create", "build", "generate", "scaffold", "new project", 
+        "from scratch", "start", "initialize", "setup"
+    ]
+    
+    # Keywords that suggest iterative refinement
+    iterative_keywords = [
+        "update", "modify", "change", "add", "extend", "improve", 
+        "fix", "refactor", "enhance", "adjust", "edit"
+    ]
+    
+    query_lower = user_query.lower()
+    
+    # Count keyword matches
+    first_gen_score = sum(1 for keyword in first_gen_keywords if keyword in query_lower)
+    iterative_score = sum(1 for keyword in iterative_keywords if keyword in query_lower)
+    
+    # Determine mode
+    if has_backend or has_frontend:
+        if iterative_score > first_gen_score:
+            mode = "iterative_refinement"
+            recommendation = "🔄 Iterative Refinement Mode - Update existing project files"
+        else:
+            mode = "first_generation"
+            recommendation = "⚠️ First Generation Mode - Will overwrite existing files"
+    else:
+        mode = "first_generation"
+        recommendation = "🆕 First Generation Mode - Create new project structure"
+    
+    analysis = f"""🎯 Generation Mode Analysis:
+- Mode Detected: {mode}
+- Existing Backend: {'✅ Yes' if has_backend else '❌ No'}
+- Existing Frontend: {'✅ Yes' if has_frontend else '❌ No'}
+- First Gen Keywords: {first_gen_score}
+- Iterative Keywords: {iterative_score}
+
+💡 Recommendation: {recommendation}
+
+📋 Query Analysis: "{user_query[:100]}{'...' if len(user_query) > 100 else ''}"
 """
+    
+    return analysis
+
+@tool
+def backup_existing_files() -> str:
+    """
+    Create backups of existing generated files before making changes.
+    
+    Returns:
+        Backup status and file list
+    """
+    import os
+    import shutil
+    from datetime import datetime
+    
+    if not os.path.exists("generated"):
+        return "📁 No generated files to backup"
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    backup_dir = f"generated_backup_{timestamp}"
+    
+    try:
+        shutil.copytree("generated", backup_dir)
+        
+        # Count backed up files
+        file_count = 0
+        for root, dirs, files in os.walk(backup_dir):
+            file_count += len(files)
+        
+        return f"✅ Backup created: {backup_dir} ({file_count} files backed up)"
+        
+    except Exception as e:
+        return f"❌ Backup failed: {str(e)}"
+
+@tool
+def optimize_for_modern_frontend() -> str:
+    """
+    Analyze and optimize the current frontend project for modern React/Next.js best practices.
+    
+    Returns:
+        Comprehensive optimization report and recommendations
+    """
+    import os
+    import json
+    
+    optimizations = []
+    optimizations.append("🚀 Modern Frontend Optimization Analysis:")
+    optimizations.append("=" * 50)
+    
+    # Check package.json for optimization opportunities
+    package_json_path = "generated/frontend/package.json"
+    if os.path.exists(package_json_path):
+        try:
+            with open(package_json_path, 'r') as f:
+                package_data = json.load(f)
+            
+            optimizations.append("\n📦 Dependencies Analysis:")
+            
+            # Check for modern React patterns
+            dependencies = package_data.get("dependencies", {})
+            dev_dependencies = package_data.get("devDependencies", {})
+            
+            # React version check
+            react_version = dependencies.get("react", "Not found")
+            optimizations.append(f"  React Version: {react_version}")
+            
+            # Modern tooling recommendations
+            modern_tools = {
+                "vite": "Fast build tool and dev server",
+                "@vitejs/plugin-react": "Vite React plugin",
+                "tailwindcss": "Utility-first CSS framework",
+                "@tanstack/react-query": "Data fetching and caching",
+                "zustand": "Lightweight state management",
+                "react-hook-form": "Performant forms library"
+            }
+            
+            optimizations.append("\n🛠️ Modern Tooling Recommendations:")
+            for tool, description in modern_tools.items():
+                if tool in dependencies or tool in dev_dependencies:
+                    optimizations.append(f"  ✅ {tool} - {description}")
+                else:
+                    optimizations.append(f"  💡 Consider adding {tool} - {description}")
+            
+        except Exception as e:
+            optimizations.append(f"❌ Error reading package.json: {str(e)}")
+    
+    # Performance optimization recommendations
+    optimizations.append("\n⚡ Performance Optimizations:")
+    optimizations.append("```jsx")
+    optimizations.append("// 1. Code Splitting with React.lazy()")
+    optimizations.append("const LazyComponent = React.lazy(() => import('./Component'));")
+    optimizations.append("")
+    optimizations.append("// 2. Memoization for expensive calculations")
+    optimizations.append("const memoizedValue = useMemo(() => expensiveCalculation(data), [data]);")
+    optimizations.append("")
+    optimizations.append("// 3. Component memoization")
+    optimizations.append("const MemoizedComponent = React.memo(Component);")
+    optimizations.append("")
+    optimizations.append("// 4. Virtual scrolling for large lists")
+    optimizations.append("import { FixedSizeList as List } from 'react-window';")
+    optimizations.append("```")
+    
+    # Accessibility recommendations
+    optimizations.append("\n♿ Accessibility Enhancements:")
+    optimizations.append("```jsx")
+    optimizations.append("// 1. Semantic HTML and ARIA labels")
+    optimizations.append("<button aria-label='Close dialog' onClick={handleClose}>")
+    optimizations.append("  <CloseIcon aria-hidden='true' />")
+    optimizations.append("</button>")
+    optimizations.append("")
+    optimizations.append("// 2. Focus management")
+    optimizations.append("const focusRef = useRef();")
+    optimizations.append("useEffect(() => focusRef.current?.focus(), []);")
+    optimizations.append("")
+    optimizations.append("// 3. Color contrast and responsive design")
+    optimizations.append("<div className='bg-blue-600 text-white p-4 md:p-6 lg:p-8'>")
+    optimizations.append("```")
+    
+    # SEO and Meta optimization
+    optimizations.append("\n🔍 SEO Optimization (Next.js):")
+    optimizations.append("```jsx")
+    optimizations.append("import Head from 'next/head';")
+    optimizations.append("")
+    optimizations.append("export default function Page() {")
+    optimizations.append("  return (")
+    optimizations.append("    <>")
+    optimizations.append("      <Head>")
+    optimizations.append("        <title>Page Title</title>")
+    optimizations.append("        <meta name='description' content='Page description' />")
+    optimizations.append("        <meta property='og:title' content='Page Title' />")
+    optimizations.append("        <meta property='og:description' content='Page description' />")
+    optimizations.append("      </Head>")
+    optimizations.append("      {/* Page content */}")
+    optimizations.append("    </>")
+    optimizations.append("  );")
+    optimizations.append("}")
+    optimizations.append("```")
+    
+    # Bundle optimization
+    optimizations.append("\n📦 Bundle Optimization:")
+    optimizations.append("```javascript")
+    optimizations.append("// vite.config.js")
+    optimizations.append("export default {")
+    optimizations.append("  build: {")
+    optimizations.append("    rollupOptions: {")
+    optimizations.append("      output: {")
+    optimizations.append("        manualChunks: {")
+    optimizations.append("          vendor: ['react', 'react-dom'],")
+    optimizations.append("          ui: ['@headlessui/react', '@heroicons/react']")
+    optimizations.append("        }")
+    optimizations.append("      }")
+    optimizations.append("    }")
+    optimizations.append("  }")
+    optimizations.append("};")
+    optimizations.append("```")
+    
+    return "\n".join(optimizations)
+
+"""
+Enhanced Frontend Agent with Advanced Tools
+==========================================
+
+This frontend agent now supports:
+
+1. 🔍 SEARCH & ANALYSIS TOOLS:
+   - search_project_files() - Search across all generated files
+   - read_project_file() - Safely read any project file
+   - analyze_project_structure() - Get complete project overview
+
+2. 📝 SAFE FILE OPERATIONS:
+   - write_project_file() - Write files with backup support
+   - backup_existing_files() - Create timestamped backups
+
+3. 🎯 DUAL GENERATION MODES:
+   - detect_generation_mode() - Auto-detect first gen vs iterative
+   - First Generation: Complete React/Next.js project scaffolding
+   - Iterative Refinement: Targeted updates without breaking existing code
+
+4. 🚀 MODERN FRONTEND OPTIMIZATION:
+   - optimize_for_modern_frontend() - React/Next.js best practices analysis
+   - Performance optimization, accessibility, SEO recommendations
+   - Modern tooling suggestions and bundle optimization
+
+WORKFLOW:
+1. detect_generation_mode() → Understand the request type
+2. analyze_project_structure() → Check current state
+3. For iterative: search_project_files() + read_project_file()
+4. backup_existing_files() → Safety first for updates
+5. Generate/modify code appropriately
+6. optimize_for_modern_frontend() → Modern React practices
+
 Frontend Agent Prompt Configuration
 Exports prompts in two formats: description and instructions
 """
@@ -113,6 +539,19 @@ CRITICAL WORKFLOW: After generating any code artifacts wrapped in <codeartifact>
 
 # Instructions format: A list of precise, task-specific instructions
 FRONTEND_INSTRUCTIONS = [
+    "GENERATION MODE DETECTION: Always start by using detect_generation_mode() to understand if this is first generation or iterative refinement.",
+    "FIRST GENERATION MODE (New Projects):",
+    "- Use analyze_project_structure() to confirm no existing frontend files",
+    "- Generate complete, runnable React 18+ applications using functional components and hooks",
+    "- Create full project structure based on complexity (simple/moderate/complex)",
+    "- Use save_generated_frontend_files() to create all files at once",
+    "ITERATIVE REFINEMENT MODE (Existing Projects):",
+    "- Use analyze_project_structure() to understand current project state",
+    "- Use search_project_files() to find relevant existing code",
+    "- Use read_project_file() to examine specific files before making changes",
+    "- Use backup_existing_files() before making significant changes",
+    "- Use write_project_file() with 'update' mode to modify existing files",
+    "- Only modify/extend specific parts without breaking existing functionality",
     "Generate React/Next.js Applications: Create complete, runnable React 18+ applications using functional components and hooks, with Next.js 13+ (App Router preferred) for SSR/SSG applications.",
     "Use Vite (preferred), Create React App, or Next.js built-in build tools.",
     "Implement responsive, mobile-first UI components with Tailwind CSS (required unless specified otherwise), CSS Modules, or Styled Components.",
@@ -125,9 +564,20 @@ FRONTEND_INSTRUCTIONS = [
     "Code Artifact Format: Wrap each file in a <codeartifact> tag with attributes: type (e.g., react, json), filename, purpose, dependencies, complexity (simple, moderate, complex), and framework (react or nextjs).",
     "Generate complete, non-truncated files with all necessary imports and no ellipses (...).",
     "Tool Usage Requirements:",
-    "- MANDATORY: Call save_generated_frontend_files after every code generation response.",
-    "- The save_generated_frontend_files tool expects the full response text containing <codeartifact> tags.",
-    "- Always verify files were saved successfully before completing your response.",
+    "WORKFLOW FOR ALL REQUESTS:",
+    "1. Call detect_generation_mode() to determine first generation vs iterative refinement",
+    "2. Call analyze_project_structure() to understand current state",
+    "3. For iterative refinement: Use search_project_files() and read_project_file() as needed",
+    "4. For significant changes: Call backup_existing_files() first",
+    "5. Generate or modify code using appropriate method:",
+    "   - First generation: Use <codeartifact> tags + save_generated_frontend_files()",
+    "   - Iterative refinement: Use write_project_file() for targeted updates",
+    "6. Always verify files were saved successfully before completing response",
+    "MANDATORY TOOL CALLS:",
+    "- detect_generation_mode() - ALWAYS call first",
+    "- analyze_project_structure() - ALWAYS call to understand current state",
+    "- save_generated_frontend_files() - Call after generating <codeartifact> tags (first generation)",
+    "- write_project_file() - Use for targeted updates (iterative refinement)",
     "Tailwind CSS Requirements: Use standard Tailwind classes (e.g., bg-blue-500, text-gray-900) and avoid custom names (e.g., bg-primary, text-muted).",
     "Include responsive breakpoints (e.g., sm:, md:, lg:) and consistent spacing (e.g., p-4, m-6).",
     "Implement semantic colors (e.g., bg-red-500) and hover effects (e.g., hover:bg-blue-600).",
@@ -163,6 +613,13 @@ FRONTEND_INSTRUCTIONS = [
     "Integrate seamlessly with backend APIs.",
     "Provide proper error handling and user feedback.",
     "Optimize for SEO in Next.js projects.",
+    "MODERN FRONTEND OPTIMIZATION:",
+    "- Use optimize_for_modern_frontend() to analyze and optimize for modern React/Next.js practices",
+    "- Implement code splitting, memoization, and performance optimizations",
+    "- Use modern tooling like Vite, TanStack Query, Zustand for better DX",
+    "- Ensure accessibility compliance and responsive design",
+    "- Optimize bundle size and implement proper caching strategies",
+    "- Follow React 18+ patterns and Next.js 13+ App Router when applicable",
     "Mandatory Requirements: Always use Tailwind CSS unless explicitly requested otherwise.",
     "Always use functional components with hooks.",
     "Always include responsive, mobile-first design.",
@@ -197,7 +654,19 @@ frontend_agent = Agent(
         "- Create responsive, accessible, modern React applications",
         "- Generate all files with complete implementations - no placeholders or TODOs",
     ],
-    tools=[save_generated_frontend_files, get_project_plan, update_frontend_status, get_development_status],
+    tools=[
+        save_generated_frontend_files, 
+        get_project_plan, 
+        update_frontend_status, 
+        get_development_status,
+        search_project_files,
+        read_project_file,
+        write_project_file,
+        analyze_project_structure,
+        detect_generation_mode,
+        backup_existing_files,
+        optimize_for_modern_frontend
+    ],
     show_tool_calls=True,
 )
 
