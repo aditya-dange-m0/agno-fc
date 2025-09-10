@@ -1,0 +1,8 @@
+1. Resolve Requirment.txt
+2. Add E2B Tools
+3. Prompt Enhancement 
+4. Model Testing - Gpt-5 and image analysis
+5. Backend agent API INFO saving
+6. Frontend Kimi-k2
+7. Debug agent tsx linting checks and Deligating error to Orchestrator
+8. Promt / Model 

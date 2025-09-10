@@ -296,7 +296,7 @@ def create_development_team():
         dev_team = Team(
             name="Full-Stack Development Team",
             team_id="dev_team",
-            model=OpenAIChat(id="gpt-4o-mini",api_key=os.getenv("OPENAI_API_KEY")),
+            model=OpenAIChat(id="gpt-5-mini",api_key=os.getenv("OPENAI_API_KEY")),
             members=[planner_agent, backend_agent, frontend_agent],
             
             # Memory configuration for persistent conversational history

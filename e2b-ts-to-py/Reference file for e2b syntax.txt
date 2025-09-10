@@ -1,0 +1,296 @@
+E2B init in Python
+The Python SDK supports creating a sandbox with a template ID and API key (env var E2B_API_KEY), matching the TS behavior; this is the base for all tools below.
+Host exposure for ports mirrors getHost from the JS SDK; the Python SDK provides equivalent access to construct external URLs after a service binds to a port
+python
+# tools/sandbox_service.py
+import os
+from typing import Optional, Dict, Any
+from e2b import Sandbox  # pip install e2b
+
+class SandboxService:
+    def __init__(self, template_id: Optional[str] = None, api_key: Optional[str] = None, timeout_s: int = 3600):
+        self.template_id = template_id
+        self.api_key = api_key or os.getenv("E2B_API_KEY")
+        if not self.api_key:
+            raise RuntimeError("E2B_API_KEY is not set")
+        self.timeout_s = timeout_s
+        self._sbx: Optional[Sandbox] = None
+
+    def ensure(self) -> Sandbox:
+        if self._sbx:
+            return self._sbx
+        # v1.x supports direct constructor with keywords per docs
+        self._sbx = Sandbox(
+            template=self.template_id,
+            timeout=self.timeout_s,
+            api_key=self.api_key,
+        )
+        return self._sbx
+
+    def close(self):
+        if self._sbx:
+            self._sbx.kill()
+            self._sbx = None
+
+    # Cross-version host getter
+    def get_host(self, port: int) -> str:
+        sbx = self.ensure()
+        if hasattr(sbx, "get_host"):
+            return sbx.get_host(port)
+        # Fallback: some SDKs expose getInfo/get_info with domain and id; host is computed by SDK normally.
+        # If no method exists, raise explicit error to avoid returning invalid URLs.
+        raise RuntimeError("get_host is not available in this SDK version; upgrade e2b SDK")
+
+Tools: file system
+The SDK exposes files.read, files.write, files.list, and directory creation; use these to implement read/write/list/mkdir. For content/search, leverage grep/find via commands.run.
+python
+# tools/files.py
+from typing import Dict, Any
+from .sandbox_service import SandboxService
+
+class FileTools:
+    def __init__(self, svc: SandboxService):
+        self.svc = svc
+
+    def write_file(self, path: str, content: bytes | str) -> Dict[str, Any]:
+        sbx = self.svc.ensure()
+        sbx.files.write(path, content)
+        return {"ok": True}
+
+    def read_file(self, path: str) -> bytes:
+        sbx = self.svc.ensure()
+        return sbx.files.read(path)  # returns bytes
+
+    def make_dir(self, path: str) -> Dict[str, Any]:
+        sbx = self.svc.ensure()
+        sbx.files.make_dir(path)
+        return {"ok": True}
+
+    def list_dir(self, path: str = "/home") -> list[dict]:
+        sbx = self.svc.ensure()
+        return sbx.files.list(path)
+Tools: shell/commands and PTY
+Foreground commands use commands.run with timeout; background services set background=True and timeout disabled.
+python
+# tools/commands.py
+import shlex
+from typing import Dict, Any
+from .sandbox_service import SandboxService
+
+class CommandTools:
+    def __init__(self, svc: SandboxService):
+        self.svc = svc
+
+    def run_command(self, cmd: str, cwd: str = "/home", timeout_ms: int = 60000) -> Dict[str, Any]:
+        sbx = self.svc.ensure()
+        res = sbx.commands.run(cmd, cwd=cwd, timeout_ms=timeout_ms)
+        return {"stdout": res.stdout or "", "stderr": res.stderr or "", "exitCode": int(res.exit_code)}
+
+    def run_command_bg(self, cmd: str, cwd: str = "/home") -> Dict[str, Any]:
+        sbx = self.svc.ensure()
+        res = sbx.commands.run(cmd, cwd=cwd, background=True, timeout_ms=0)
+        return {"ok": True, "pid": getattr(res, "pid", None)}
+python
+# tools/pty.py
+from typing import Optional
+from .sandbox_service import SandboxService
+
+class PTYTools:
+    def __init__(self, svc: SandboxService):
+        self.svc = svc
+        self._pty = None
+
+    def open_shell(self) -> dict:
+        sbx = self.svc.ensure()
+        self._pty = sbx.pty.start("/bin/bash")
+        return {"ok": True}
+
+    def write_line(self, line: str) -> dict:
+        if not self._pty:
+            raise RuntimeError("PTY not started")
+        self._pty.write(line + "\n")
+        return {"ok": True}
+
+    def read(self, timeout_ms: int = 1000) -> str:
+        if not self._pty:
+            raise RuntimeError("PTY not started")
+        out = self._pty.read(timeout_ms=timeout_ms)
+        return out or ""
+Tools: service start and readiness checks
+Start a long-running service with background=True, then poll ss/netstat and curl 127.0.0.1 to confirm port readiness before returning the external URL via getHost equivalent
+python
+# tools/services.py
+import time
+from typing import Dict, Any
+from .sandbox_service import SandboxService
+
+class ServiceTools:
+    def __init__(self, svc: SandboxService):
+        self.svc = svc
+
+    def wait_for_service_ready(self, port: int, timeout_ms: int = 60000) -> None:
+        sbx = self.svc.ensure()
+        start = time.time()
+        while True:
+            if (time.time() - start) * 1000 > timeout_ms:
+                raise RuntimeError(f"Service on port {port} failed to start in {timeout_ms}ms")
+            port_chk = sbx.commands.run(
+                f'bash -lc \'ss -tlnp | grep ":{port} " || netstat -tlnp | grep ":{port} "\'',
+                cwd="/tmp",
+                timeout_ms=5000,
+            )
+            if f":{port}" in (port_chk.stdout or ""):
+                http_chk = sbx.commands.run(
+                    f'curl -s -o /dev/null -w "%{{http_code}}" --max-time 5 http://127.0.0.1:{port}/ || echo curl_failed',
+                    cwd="/tmp",
+                    timeout_ms=10000,
+                )
+                code = (http_chk.stdout or "").strip()
+                if code and code not in ("curl_failed", "000"):
+                    return
+            time.sleep(2)
+
+    def start_service(self, cmd: str, port: int, cwd: str = "/home") -> Dict[str, Any]:
+        sbx = self.svc.ensure()
+        res = sbx.commands.run(cmd, cwd=cwd, background=True, timeout_ms=0)
+        self.wait_for_service_ready(port, timeout_ms=60000)
+        host = self.svc.get_host(port)
+        url = f"https://{host}"
+        return {"pid": getattr(res, "pid", None), "url": url}
+
+Tools: diagnostics, info, metrics
+Provide quick triage like the TS code: ss/netstat, ps aux, and tail logs. Expose sandbox info; metrics availability depends on SDK version
+python
+# tools/diagnostics.py
+from typing import Dict, Any
+from .sandbox_service import SandboxService
+
+class DiagnosticTools:
+    def __init__(self, svc: SandboxService):
+        self.svc = svc
+
+    def service_diagnostics(self, port: int) -> Dict[str, Any]:
+        sbx = self.svc.ensure()
+        ports = sbx.commands.run('bash -lc "ss -tlnp || netstat -tlnp"', cwd="/tmp", timeout_ms=10000)
+        procs = sbx.commands.run("ps aux | head -50", cwd="/tmp", timeout_ms=10000)
+        logs = sbx.commands.run('bash -lc \'find /tmp -name "*.log" -type f -exec tail -n 20 {} + 2>/dev/null || echo "No logs found"\'', cwd="/tmp", timeout_ms=10000)
+        return {
+            "ports": ports.stdout or "",
+            "processes": procs.stdout or "",
+            "logs": logs.stdout or "",
+            "exitCodes": {"ports": int(ports.exit_code), "processes": int(procs.exit_code), "logs": int(logs.exit_code)},
+        }
+
+    def sandbox_info(self) -> Dict[str, Any]:
+        sbx = self.svc.ensure()
+        # v1.7 get_info exists; guard older names
+        if hasattr(sbx, "get_info"):
+            return sbx.get_info()
+        if hasattr(sbx, "getInfo"):
+            return sbx.getInfo()
+        raise RuntimeError("get_info not available in this SDK version")
+Tools: networking and process helpers
+Probe HTTP endpoints using curl inside the sandbox for reliable network checks; list processes or kill by pid as needed
+python
+# tools/netproc.py
+import shlex
+from typing import Dict, Any
+from .sandbox_service import SandboxService
+
+class NetProcTools:
+    def __init__(self, svc: SandboxService):
+        self.svc = svc
+
+    def http_probe(self, url: str, method: str = "GET", timeout_s: int = 5) -> Dict[str, Any]:
+        sbx = self.svc.ensure()
+        cmd = f'curl -s -o /dev/null -w "%{{http_code}}" -X {shlex.quote(method)} --max-time {int(timeout_s)} {shlex.quote(url)}'
+        res = sbx.commands.run(cmd, cwd="/tmp", timeout_ms=(timeout_s + 2) * 1000)
+        return {"status": (res.stdout or "").strip(), "exitCode": int(res.exit_code)}
+
+    def list_processes(self) -> str:
+        sbx = self.svc.ensure()
+        res = sbx.commands.run("ps aux", cwd="/tmp", timeout_ms=10000)
+        return res.stdout or ""
+
+    def kill(self, pid: int, signal: str = "-9") -> Dict[str, Any]:
+        sbx = self.svc.ensure()
+        res = sbx.commands.run(f"kill {signal} {pid}", cwd="/tmp", timeout_ms=5000)
+        return {"exitCode": int(res.exit_code), "stderr": res.stderr or ""}
+
+Tools: archives (zip/unzip) and download flow
+Implement zip/unzip via shell (zip/unzip or tar) inside the sandbox; most templates include zip/unzip or tar—fallback to tar if zip not present.
+
+To let end users download generated code, produce a zip at a known path and either read it back through files.read or create a pre‑signed download URL with secure: true
+python
+# tools/archive.py
+import shlex
+from typing import Dict, Any
+from .sandbox_service import SandboxService
+
+class ArchiveTools:
+    def __init__(self, svc: SandboxService):
+        self.svc = svc
+
+    def zip_dir(self, src_dir: str, dest_zip: str) -> Dict[str, Any]:
+        sbx = self.svc.ensure()
+        cmd = (
+            f'bash -lc \'(command -v zip >/dev/null && cd {shlex.quote(src_dir)} && zip -r {shlex.quote(dest_zip)} .)'
+            f' || (cd {shlex.quote(src_dir)} && tar -czf {shlex.quote(dest_zip)} .)\''
+        )
+        res = sbx.commands.run(cmd, cwd="/", timeout_ms=180000)
+        return {"exitCode": int(res.exit_code), "stderr": res.stderr or ""}
+
+    def unzip_to(self, zip_path: str, dest_dir: str) -> Dict[str, Any]:
+        sbx = self.svc.ensure()
+        cmd = (
+            f'bash -lc \'(command -v unzip >/dev/null && mkdir -p {shlex.quote(dest_dir)} && unzip -o {shlex.quote(zip_path)} -d {shlex.quote(dest_dir)})'
+            f' || (mkdir -p {shlex.quote(dest_dir)} && tar -xzf {shlex.quote(zip_path)} -C {shlex.quote(dest_dir)})\''
+        )
+        res = sbx.commands.run(cmd, cwd="/", timeout_ms=180000)
+        return {"exitCode": int(res.exit_code), "stderr": res.stderr or ""}
+
+    def prepare_project_download(self, project_dir: str, out_path: str = "/tmp/project.zip") -> Dict[str, Any]:
+        z = self.zip_dir(project_dir, out_path)
+        if z["exitCode"] != 0:
+            return {"ok": False, "error": z["stderr"]}
+        return {"ok": True, "zip_path": out_path}
+
+    def read_zip_bytes(self, zip_path: str = "/tmp/project.zip") -> bytes:
+        sbx = self.svc.ensure()
+        return sbx.files.read(zip_path)
+
+    def presigned_download_url(self, zip_path: str = "/tmp/project.zip", expires_in_s: int = 600) -> str:
+        sbx = self.svc.ensure()
+        files = getattr(sbx, "files", None)
+        if files and hasattr(files, "download_url"):
+            return files.download_url(zip_path, expires_in_s=expires_in_s)
+        # Fallback if SDK lacks presigned URLs
+        raise RuntimeError("Presigned download URLs not supported by current e2b SDK; stream bytes instead.")
+
+Putting it together: wiring and LLM tool catalog
+Combine service and tools; register them as LLM-callable functions with strict schemas: write_file, read_file, make_dir, list_dir, search_files, run_command, run_command_bg, open_shell/write_line/read, start_service, wait_for_service_ready, service_diagnostics, sandbox_info, http_probe, list_processes, kill, zip_dir, unzip_to, prepare_project_download, presigned_download_ur
+python
+# app/bootstrap.py
+import os
+from .tools.sandbox_service import SandboxService
+from .tools.files import FileTools
+from .tools.commands import CommandTools
+from .tools.pty import PTYTools
+from .tools.services import ServiceTools
+from .tools.diagnostics import DiagnosticTools
+from .tools.netproc import NetProcTools
+from .tools.archive import ArchiveTools
+
+def build_toolkit(template_id: str | None = None, api_key: str | None = None):
+    svc = SandboxService(template_id=template_id, api_key=api_key)
+    return {
+        "svc": svc,
+        "files": FileTools(svc),
+        "cmds": CommandTools(svc),
+        "pty": PTYTools(svc),
+        "services": ServiceTools(svc),
+        "diag": DiagnosticTools(svc),
+        "netproc": NetProcTools(svc),
+        "archive": ArchiveTools(svc),
+    }
+Download UX options

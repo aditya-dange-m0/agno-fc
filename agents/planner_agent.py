@@ -1,5 +1,6 @@
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
+from agno.models.openrouter import OpenRouter
 from agno.tools import tool
 from rich.pretty import pprint
 from agno.playground import Playground
@@ -123,7 +124,7 @@ def get_planner_instructions():
 planner_agent = Agent(
     name="Project Planner",
     role="Senior Software Architect specializing in project planning",
-    model=OpenAIChat(id="gpt-4o-mini", api_key=os.getenv("OPENAI_API_KEY")),
+    model=OpenAIChat(id="gpt-5-mini", api_key=os.getenv("OPENAI_API_KEY")),
     description=get_planner_description(),
     instructions=get_planner_instructions() + [
         "",
