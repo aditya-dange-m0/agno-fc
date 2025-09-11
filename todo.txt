@@ -6,3 +6,72 @@
 6. Frontend Kimi-k2
 7. Debug agent tsx linting checks and Deligating error to Orchestrator
 8. Promt / Model 
+
+
+Planner (what the Planner must generate)
+
+Planner creates the product & implementation plan plus a small, structured API surface description to hand to the SpecGenerator.
+
+Essential props the Planner should produce:
+
+project_name, intent_id, description — global context & traceability
+
+business_goals — high-level goals / success metrics
+
+features[] — list of features with: name, description, priority, acceptance_criteria, complexity
+
+entities[] (conceptual models) — each with: name, fields (name + high-level type: string/number/date/array/object/ref), relationships, business_rules, unique_constraints
+
+Important: keep types high-level (e.g., string, number) and include business rules but not low-level validation (no format/regex unless critical).
+
+api_surface[] — high-level endpoint list (see exact handoff format below). Must be concise, natural-language friendly, and unambiguous.
+
+auth_policy — high-level auth decision (e.g., jwt_with_refresh, oauth2, api_key) and which features require auth
+
+tech_stack — (already in your instructions: React+TS, FastAPI, MongoDB etc.) — Planner enforces stack
+
+nonfunctional_requirements — rate limits, expected QPS, latency targets, data residency, PII handling
+
+environment_vars — list of env var names and purpose (no secrets)
+
+deliverables & milestones — concrete PRs, acceptance criteria, test expectations
+
+notes_for_spec — any special constraints the SpecGenerator must obey (e.g., “user id must be UUIDv4”, “age must be integer >= 0” — use sparingly and only if critical)
+
+trace_links — job/branch names, planner commit id, spec_suggested_version (semantic version hint)
+
+Planner should NOT produce full JSON Schema or exact OpenAPI paths/components shape. It should produce the minimal, structured handoff (api_surface) that’s easy to review and authoritative for intent.
+
+SpecGenerator (what the SpecGenerator must generate)
+
+SpecGenerator's sole job is to take the Planner handoff and produce a complete, validated OpenAPI v3.1 (or v3.x) spec plus machine-friendly artifacts (typegen, mocks, test-cases).
+
+Essential outputs for SpecGenerator:
+
+openapi.yaml / openapi.json — full contract with info, servers, paths, components (schemas, parameters, responses), securitySchemes
+
+components.schemas — complete JSON Schemas for all entities, with formats, enums, required fields, pattern/constraints, examples
+
+paths — every endpoint expanded to include:
+
+operationId, tags, parameters (path/query/header), requestBody (content + schema), responses (status codes + schemas), security
+
+x-agent-meta extension fields (see below) for traceability
+
+examples — at least one example request/response per path (happy-path)
+
+response_status_map — clear mapping of status codes to conditions (201 -> created, 400 -> validation error, 401 -> auth)
+
+api_version, spec_version, revision, generated_by metadata
+
+mock_server_config (optional) — Postman/Mock server or schemathesis/pytest input fixtures
+
+consumer_contract_tests — which payloads and assertions the Tester should run (deterministic test vectors)
+
+client_codegen_config — language targets and generator options (e.g., ts-fetch with strict typings)
+
+validation_report — spec lint results (e.g., swagger-cli / spectral output) before publishing
+
+spec_publish_uri — where the spec is stored (s3 path or repo path) and commit SHA
+
+SpecGenerator should not decide business priority, tech stack, or delivery milestones — that is Planner’s domain.
